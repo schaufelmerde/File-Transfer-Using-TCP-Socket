@@ -13,26 +13,29 @@ Prerequisites
 Quick start (Windows)
 ---------------------
 
-Three batch files handle the setup. Run them by double-clicking.
+Double-click **`run.bat`**. That is all you need: it installs the dependencies on
+first run, starts the server if one is not already running, and opens the client.
 
 | File | What it does |
 | --- | --- |
-| `setup.bat` | Creates a virtual environment and installs PyQt5 and tqdm. Needed only on a machine that will **send** files. Safe to re-run. |
-| `run-server.bat` | Starts the server so this machine can **receive**. Prints this machine's IP address and warns if the firewall port looks closed. Needs no setup — it falls back to the system Python. |
-| `run-client.bat` | Opens the client window so this machine can **send**. |
+| **`run.bat`** | **The one to use.** Does the setup, the server and the client in one go. |
+| `setup.bat` | Creates a virtual environment and installs PyQt5 and tqdm. Run by `run.bat` automatically. Safe to re-run. |
+| `run-server.bat` | Starts only the server, if you want a receive-only machine. Prints this machine's IP and warns if the firewall port looks closed. Needs no setup — it falls back to the system Python. |
+| `run-client.bat` | Opens only the client. |
 
 Sending in both directions
 --------------------------
 
-To move files freely between two machines, run **`run-server.bat` on both of them**
-and leave it running. Each machine is then a receiver, and either one can send to
-the other with `run-client.bat`. The server accepts connections from any address,
-so no extra configuration is needed.
+Run **`run.bat` on both machines**. Each one then has a server window listening and
+a client window ready, so either machine can send to the other at any time. The
+server accepts connections from any address, so there is nothing else to configure.
+
+Keep the server window open — that is what receives. The client window is only
+needed while you are sending, and you can close it in between.
 
 On each machine, once:
 
-1. Run `setup.bat` (only needed for sending).
-2. Allow port 5555 through the firewall. In an **Administrator** PowerShell:
+1. Allow port 5555 through the firewall. In an **Administrator** PowerShell:
 
     ```powershell
     New-NetFirewallRule -DisplayName "TCP File Transfer" -Direction Inbound -LocalPort 5555 -Protocol TCP -Action Allow
@@ -42,18 +45,23 @@ On each machine, once:
     features" prompt the first time the server runs; allowing it on **Private
     networks** does the same thing. On Linux with ufw: `sudo ufw allow 5555/tcp`.
     To undo it later: `Remove-NetFirewallRule -DisplayName "TCP File Transfer"`.
+    Dependencies are installed by `run.bat` itself, so there is no separate
+    install step.
 
-Then, whenever you want to transfer:
+Then, to transfer:
 
-1. Run `run-server.bat` on **both** machines. Each window prints its own IP address,
+1. Run `run.bat` on **both** machines. Each server window prints its own IP address,
    something like `192.168.1.42`.
-2. On the machine you are sending *from*, run `run-client.bat`.
-3. Type the **other** machine's IP into the **Server IP** box, leave the port at
-   `5555`, click **Choose File**, then **Send File**.
+2. In the client window on the machine you are sending *from*, type the **other**
+   machine's IP into the **Server IP** box and leave the port at `5555`.
+3. Click **Choose File**, then **Send File**.
 4. The file lands in the `REC` folder next to `server.py` on the receiving machine.
 
-Send the other way by doing steps 2-3 on the other machine. Both servers stay
-running, so neither side needs restarting to reverse direction.
+To send the other way, do steps 2-3 on the other machine instead. Both servers stay
+running, so nothing needs restarting to reverse direction.
+
+Running `run.bat` again when a server is already listening will not start a second
+one; it just opens another client.
 
 Manual setup (any platform)
 ---------------------------

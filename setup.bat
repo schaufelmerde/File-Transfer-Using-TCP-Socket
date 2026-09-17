@@ -60,4 +60,5 @@ echo.
 echo     run-server.bat  - receive files on this machine
 echo     run-client.bat  - send a file to the other machine
 echo.
-pause
+REM run.bat calls this with /quiet so it does not stop for a keypress
+if /i not "%~1"=="/quiet" pause

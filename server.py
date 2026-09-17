@@ -1,5 +1,6 @@
 import os
 import socket
+import sys
 import threading
 
 SERVER_HOST = '0.0.0.0'
@@ -76,8 +77,22 @@ def handle_client(conn, address):
 
 def start_server():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind((SERVER_HOST, SERVER_PORT))
+    if sys.platform == "win32":
+        # Windows SO_REUSEADDR lets a second process bind a port that is
+        # already in use and quietly steal connections from the first, so
+        # ask for the opposite: fail loudly if someone already has it
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        # elsewhere this just avoids a bind error while the old socket
+        # lingers in TIME_WAIT after a restart
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind((SERVER_HOST, SERVER_PORT))
+    except OSError as e:
+        print(f"[X] Could not listen on port {SERVER_PORT}: {e}")
+        print("    Is another copy of the server already running?")
+        s.close()
+        return
     s.listen(5)
     print(f"[*] Listening as {SERVER_HOST}:{SERVER_PORT}")
     try:
