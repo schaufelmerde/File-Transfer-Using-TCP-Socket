@@ -7,69 +7,115 @@ SERVER_HOST = '0.0.0.0'
 SERVER_PORT = 5555
 BUFFER_SIZE = 4096  # 4KB buffer size
 SEPARATOR = "<SEPARATOR>"
+REC_DIR = "REC"
 
 # several clients can be writing into REC at once, so serialise the bits
-# that would otherwise race: creating the directory and picking a filename
+# that would otherwise race: creating directories and picking a filename
 rec_lock = threading.Lock()
 
 
 def receive_header(conn):
     # the header is terminated by a newline, so read one byte at a time
     # until we hit it -- TCP gives us a stream, not discrete messages, so a
-    # single recv() could otherwise swallow part of the file contents too
+    # single recv() could otherwise swallow part of the file contents too.
+    # returns None when the client has cleanly finished sending.
     header = b""
     while not header.endswith(b"\n"):
         byte = conn.recv(1)
         if not byte:
-            raise ConnectionError("connection closed before the header arrived")
+            if not header:
+                return None
+            raise ConnectionError("connection closed part-way through a header")
         header += byte
     return header.decode().rstrip("\n")
 
 
-def reserve_path(filename):
-    # claim a free path under REC so two clients sending the same filename
-    # don't write over each other: file.txt, file-1.txt, file-2.txt, ...
+def safe_parts(raw):
+    # a sender supplies the relative path, so treat it as hostile: strip
+    # anything that could climb out of REC or name an absolute location
+    parts = []
+    for part in raw.replace("\\", "/").split("/"):
+        part = part.strip().rstrip(".")
+        if part in ("", ".", ".."):
+            continue
+        if ":" in part:
+            # drive or stream qualifiers like C: or name:stream
+            part = part.split(":")[-1]
+        if part:
+            parts.append(part)
+    if not parts:
+        raise ValueError(f"unusable path {raw!r}")
+    return parts
+
+
+def reserve_path(parts):
+    # claim a free path under REC so two senders don't write over each
+    # other: file.txt, file-1.txt, file-2.txt, ...
     with rec_lock:
-        os.makedirs("REC", exist_ok=True)
-        stem, ext = os.path.splitext(filename)
-        candidate = os.path.join("REC", filename)
+        rec_root = os.path.abspath(REC_DIR)
+        directory = os.path.join(rec_root, *parts[:-1])
+        os.makedirs(directory, exist_ok=True)
+
+        # belt and braces: refuse anything that still escapes REC
+        if os.path.commonpath([rec_root, os.path.abspath(directory)]) != rec_root:
+            raise ValueError(f"path escapes {REC_DIR}: {parts}")
+
+        stem, ext = os.path.splitext(parts[-1])
+        candidate = os.path.join(directory, parts[-1])
         counter = 1
         while os.path.exists(candidate):
-            candidate = os.path.join("REC", f"{stem}-{counter}{ext}")
+            candidate = os.path.join(directory, f"{stem}-{counter}{ext}")
             counter += 1
         # create it now, while we still hold the lock, so the name is taken
         open(candidate, "wb").close()
         return candidate
 
 
-def receive_file(conn, address):
-    received = receive_header(conn)
-    filename, filesize = received.split(SEPARATOR)
-    filename = os.path.basename(filename)
+def receive_one_file(conn, header):
+    relpath, filesize = header.rsplit(SEPARATOR, 1)
     filesize = int(filesize)
-    file_path = reserve_path(filename)
+    file_path = reserve_path(safe_parts(relpath))
     remaining = filesize
     with open(file_path, "wb") as f:
         while remaining > 0:
             # read exactly what the header promised, no more -- anything
-            # past it belongs to whatever the sender does next
+            # past it is the next file in this batch
             data = conn.recv(min(BUFFER_SIZE, remaining))
             if not data:
                 break
             f.write(data)
             remaining -= len(data)
     if remaining > 0:
-        print(f"[!] Incomplete transfer from {address[0]}:{address[1]}: "
-              f"{filesize - remaining} of {filesize} bytes saved as {file_path}")
+        raise ConnectionError(
+            f"only {filesize - remaining} of {filesize} bytes arrived for {relpath}")
+    return file_path, filesize
+
+
+def receive_batch(conn, address):
+    # one connection carries any number of files, so a folder of 5000 files
+    # doesn't mean 5000 connections
+    count = 0
+    total = 0
+    while True:
+        header = receive_header(conn)
+        if header is None:
+            break
+        file_path, filesize = receive_one_file(conn, header)
+        count += 1
+        total += filesize
+        shown = os.path.relpath(file_path, os.path.abspath(REC_DIR))
+        print(f"    {shown}  ({filesize} bytes)")
+    if count:
+        print(f"[+] {count} file(s), {total} bytes from {address[0]}:{address[1]}")
     else:
-        print(f"File received from {address[0]}:{address[1]} saved as {file_path}")
+        print(f"[*] {address[0]}:{address[1]} sent nothing.")
 
 
 def handle_client(conn, address):
     try:
-        receive_file(conn, address)
+        receive_batch(conn, address)
     except (ConnectionError, OSError, ValueError) as e:
-        # one malformed transfer shouldn't take the whole server down
+        # one bad transfer shouldn't take the whole server down
         print(f"[!] Transfer from {address[0]}:{address[1]} failed: {e}")
     finally:
         conn.close()

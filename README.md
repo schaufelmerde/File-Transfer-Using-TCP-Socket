@@ -54,10 +54,16 @@ Then, to transfer:
    something like `192.168.1.42`.
 2. In the client window on the machine you are sending *from*, type the **other**
    machine's IP into the **Server IP** box and leave the port at `5555`.
-3. Click **Choose File**, then **Send File**.
-4. The file lands in the `REC` folder next to `server.py` on the receiving machine.
+3. Build the list of what to send:
+   * **Add Files...** picks one or more files at once.
+   * **Add Folder...** adds a whole folder, including every sub-folder inside it.
+     The native folder dialog only takes one at a time, so press it again for each
+     extra folder.
+   * **Remove Selected** and **Clear** fix up the list.
+4. Click **Send**. The progress bar tracks the files as they go.
+5. Everything lands in the `REC` folder next to `server.py` on the receiving machine.
 
-To send the other way, do steps 2-3 on the other machine instead. Both servers stay
+To send the other way, do steps 2-4 on the other machine instead. Both servers stay
 running, so nothing needs restarting to reverse direction.
 
 Running `run.bat` again when a server is already listening will not start a second
@@ -97,14 +103,19 @@ How it behaves
 The server listens on `0.0.0.0:5555`, accepting connections on any network
 interface. Received files are saved to `./REC`, created if it does not exist.
 
+Folders keep their structure: sending `C:\pics\holiday` produces `REC/holiday/...`
+with every sub-folder inside it. A batch of files and folders travels over a single
+connection, and the server prints each file as it arrives plus a total at the end.
+
 Each client is handled in its own thread, so several transfers can run at once and
-a slow sender does not hold up the others. If two files arrive with the same name,
-the later ones are saved as `name-1.ext`, `name-2.ext`, and so on, rather than
+a slow sender does not hold up the others. If a file arrives where one of that name
+already exists, it is saved as `name-1.ext`, `name-2.ext`, and so on, rather than
 overwriting. A failed or malformed transfer is logged and the server keeps running.
 Press Ctrl+C to stop it.
 
-The client shows transfer progress in its console window, and reports the outcome
-in a dialog.
+The client sends on a background thread, so its window stays responsive during a
+large transfer. Per-file progress appears in its console window, overall progress in
+the window itself, and the outcome in a dialog.
 
 Troubleshooting
 ---------------
@@ -122,19 +133,38 @@ Notes and limitations
 
 * **Transfers are not encrypted or authenticated.** Anything sent travels over the network in plain text, and the server accepts a file from anyone who can reach the port. Use this on networks you trust, and stop the server when you are done with it.
 * Both machines must be on the same local network. This is not designed to work across the internet.
-* A single connection only moves a file one way, from client to server. Run the
+* A single connection only moves files one way, from client to server. Run the
   server on both machines to transfer in either direction.
+* Folders are rebuilt from the files inside them, so a completely empty sub-folder
+  is not recreated on the other side.
+* File permissions and timestamps are not preserved; only names, folder structure
+  and contents.
 
 Protocol
 --------
 
-The client opens a TCP connection and sends a newline-terminated header:
+The client opens one TCP connection for the whole batch and, for each file, sends a
+newline-terminated header:
 
 ```
-<filename><SEPARATOR><filesize>\n
+<relative/path><SEPARATOR><filesize>\n
 ```
 
-followed by exactly `filesize` bytes of file content. The server reads up to the newline to find the header boundary, then reads exactly that many bytes. The newline matters: TCP is a byte stream with no message boundaries, so without a delimiter the header and the start of the file can arrive in the same packet and be read together.
+followed by exactly `filesize` bytes of content. It repeats that for every file and
+then closes the connection, which is how the server knows the batch has ended. One
+connection per batch rather than per file means sending a folder of several thousand
+files does not open several thousand sockets.
+
+The server reads up to the newline to find the header boundary, then reads exactly
+that many bytes. The newline matters: TCP is a byte stream with no message
+boundaries, so without a delimiter the header and the start of the file can arrive
+in the same packet and be read together.
+
+The relative path carries the folder structure, for example `holiday/day1/img.jpg`.
+Because that path arrives over the network, the server treats it as untrusted: it
+drops `..` segments, drive letters and leading slashes, and refuses anything that
+would still resolve outside `REC`. A sender therefore cannot write to an arbitrary
+location on the receiving machine.
 
 Contributing
 ------------
