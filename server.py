@@ -86,8 +86,15 @@ def receive_one_file(conn, header):
             f.write(data)
             remaining -= len(data)
     if remaining > 0:
+        # the sender stopped part-way, so throw the fragment away rather than
+        # leave a truncated file that looks like the real thing
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
         raise ConnectionError(
-            f"only {filesize - remaining} of {filesize} bytes arrived for {relpath}")
+            f"only {filesize - remaining} of {filesize} bytes arrived for "
+            f"{relpath} (discarded)")
     return file_path, filesize
 
 

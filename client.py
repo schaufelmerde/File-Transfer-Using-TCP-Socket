@@ -1,5 +1,7 @@
 import os
 import socket
+import threading
+
 import tqdm
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
@@ -42,12 +44,31 @@ class SendWorker(QtCore.QThread):
     progress = QtCore.pyqtSignal(int, int, str)
     done = QtCore.pyqtSignal(int, int)
     failed = QtCore.pyqtSignal(str)
+    stopped = QtCore.pyqtSignal(int, int)
 
     def __init__(self, host, port, items):
         super().__init__()
         self.host = host
         self.port = port
         self.items = items
+        # set means "keep going"; clearing it parks the worker between chunks
+        self._running = threading.Event()
+        self._running.set()
+        self._cancelled = False
+
+    def pause(self):
+        self._running.clear()
+
+    def resume(self):
+        self._running.set()
+
+    def cancel(self):
+        self._cancelled = True
+        # let a paused worker wake up and notice it has been cancelled
+        self._running.set()
+
+    def is_paused(self):
+        return not self._running.is_set()
 
     def run(self):
         sent = 0
@@ -58,6 +79,8 @@ class SendWorker(QtCore.QThread):
             # the whole batch goes down one connection, so a folder of
             # thousands of files doesn't open thousands of sockets
             for index, (full, relpath) in enumerate(self.items, 1):
+                if self._cancelled:
+                    break
                 filesize = os.path.getsize(full)
                 self.progress.emit(index, len(self.items), relpath)
                 s.sendall(f"{relpath}{SEPARATOR}{filesize}\n".encode())
@@ -66,6 +89,13 @@ class SendWorker(QtCore.QThread):
                                      leave=False)
                 with open(full, "rb") as f:
                     while True:
+                        # checked every chunk, so Stop reacts part-way through
+                        # a large file instead of after it
+                        self._running.wait()
+                        if self._cancelled:
+                            progress.close()
+                            self.stopped.emit(sent, len(self.items))
+                            return
                         bytes_read = f.read(BUFFER_SIZE)
                         if not bytes_read:
                             break
@@ -80,6 +110,9 @@ class SendWorker(QtCore.QThread):
             return
         finally:
             s.close()
+        if self._cancelled:
+            self.stopped.emit(sent, len(self.items))
+            return
         self.done.emit(sent, total_bytes)
 
 
@@ -117,6 +150,15 @@ class Client(QtWidgets.QWidget):
 
         self.send_button = QtWidgets.QPushButton('Send', self)
         self.send_button.clicked.connect(self.send)
+        self.pause_button = QtWidgets.QPushButton('Pause', self)
+        self.pause_button.clicked.connect(self.toggle_pause)
+        self.stop_button = QtWidgets.QPushButton('Stop', self)
+        self.stop_button.clicked.connect(self.stop)
+
+        send_row = QtWidgets.QHBoxLayout()
+        send_row.addWidget(self.send_button)
+        send_row.addWidget(self.pause_button)
+        send_row.addWidget(self.stop_button)
 
         self.progress_bar = QtWidgets.QProgressBar(self)
         self.progress_bar.setVisible(False)
@@ -128,13 +170,14 @@ class Client(QtWidgets.QWidget):
         vbox.addWidget(QtWidgets.QLabel('Files and folders to send:', self))
         vbox.addWidget(self.queue)
         vbox.addLayout(buttons)
-        vbox.addWidget(self.send_button)
+        vbox.addLayout(send_row)
         vbox.addWidget(self.progress_bar)
         vbox.addWidget(self.status_label)
 
         self.setLayout(vbox)
         self.setWindowTitle('Client')
         self.resize(560, 400)
+        self.set_busy(False)
         self.show()
 
     def queued_paths(self):
@@ -167,7 +210,29 @@ class Client(QtWidgets.QWidget):
         for b in (self.send_button, self.add_files_button, self.add_folder_button,
                   self.remove_button, self.clear_button):
             b.setEnabled(not busy)
+        # pause and stop are only meaningful while something is being sent
+        for b in (self.pause_button, self.stop_button):
+            b.setEnabled(busy)
+        self.pause_button.setText('Pause')
         self.progress_bar.setVisible(busy)
+
+    def toggle_pause(self):
+        if self.worker is None or not self.worker.isRunning():
+            return
+        if self.worker.is_paused():
+            self.worker.resume()
+            self.pause_button.setText('Pause')
+            self.status_label.setText('Resumed.')
+        else:
+            self.worker.pause()
+            self.pause_button.setText('Resume')
+            self.status_label.setText('Paused. Press Resume to carry on.')
+
+    def stop(self):
+        if self.worker is None or not self.worker.isRunning():
+            return
+        self.status_label.setText('Stopping...')
+        self.worker.cancel()
 
     def send(self):
         host = self.host_input.text().strip() or DEFAULT_HOST
@@ -198,6 +263,7 @@ class Client(QtWidgets.QWidget):
         self.worker.progress.connect(self.on_progress)
         self.worker.done.connect(self.on_done)
         self.worker.failed.connect(self.on_failed)
+        self.worker.stopped.connect(self.on_stopped)
         self.worker.start()
 
     def on_progress(self, index, total, name):
@@ -216,6 +282,22 @@ class Client(QtWidgets.QWidget):
         # wrong IP, server not started, or a firewall in the way -- say so
         # in the window rather than only as a console traceback
         QMessageBox.critical(self, 'Transfer failed', message)
+
+    def on_stopped(self, sent, total):
+        self.set_busy(False)
+        self.status_label.setText(f'Stopped after {sent} of {total} file(s).')
+        QMessageBox.information(
+            self, 'Stopped',
+            f'Stopped after {sent} of {total} file(s).\n\n'
+            'The file that was in flight is discarded by the receiver; the ones '
+            'already sent are kept.')
+
+    def closeEvent(self, event):
+        # don't leave a worker running into application shutdown
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.cancel()
+            self.worker.wait(5000)
+        event.accept()
 
 
 if __name__ == '__main__':

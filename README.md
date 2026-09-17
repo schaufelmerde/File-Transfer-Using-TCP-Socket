@@ -61,6 +61,10 @@ Then, to transfer:
      extra folder.
    * **Remove Selected** and **Clear** fix up the list.
 4. Click **Send**. The progress bar tracks the files as they go.
+   * **Pause** holds the transfer where it is and turns into **Resume**. The
+     connection stays open, so nothing is resent when you carry on.
+   * **Stop** abandons the transfer. Files already sent are kept; the one in
+     flight is discarded by the receiver rather than left truncated.
 5. Everything lands in the `REC` folder next to `server.py` on the receiving machine.
 
 To send the other way, do steps 2-4 on the other machine instead. Both servers stay
@@ -107,6 +111,10 @@ Folders keep their structure: sending `C:\pics\holiday` produces `REC/holiday/..
 with every sub-folder inside it. A batch of files and folders travels over a single
 connection, and the server prints each file as it arrives plus a total at the end.
 
+If a transfer is stopped part-way through a file, the receiver deletes that
+fragment instead of keeping a truncated file that looks complete. Files that
+finished earlier in the same batch are kept.
+
 Each client is handled in its own thread, so several transfers can run at once and
 a slow sender does not hold up the others. If a file arrives where one of that name
 already exists, it is saved as `name-1.ext`, `name-2.ext`, and so on, rather than
@@ -114,7 +122,7 @@ overwriting. A failed or malformed transfer is logged and the server keeps runni
 Press Ctrl+C to stop it.
 
 The client sends on a background thread, so its window stays responsive during a
-large transfer. Per-file progress appears in its console window, overall progress in
+large transfer and can be paused or stopped part-way. Per-file progress appears in its console window, overall progress in
 the window itself, and the outcome in a dialog.
 
 Troubleshooting
